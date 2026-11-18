@@ -1,6 +1,6 @@
 # Takt (working name) — lightweight hybrid agent orchestration in Rust
 
-> **Status: M0 offline orchestration foundation with a scripted mock backend.**
+> **Status: M1 Linux daemon with durable state and a scripted mock backend.**
 >
 > **Naming:** This repo is named `takt-rs` to distinguish it from existing projects using the name TAKT/takt. The eventual public name must be reviewed before release.
 
@@ -35,6 +35,7 @@ In the planned workflow, a lead agent proposes the plan, Rust validates and sche
 - [`AGENTS.md`](AGENTS.md) — working agreements for coding assistants.
 - [`prompts/START_AGENT.md`](prompts/START_AGENT.md) — copy/paste implementation kickoff.
 - [`prompts/M0_FOUNDATION.md`](prompts/M0_FOUNDATION.md) — deliberately narrow first coding milestone.
+- [`migrations/0001_initial.sql`](migrations/0001_initial.sql) — initial SQLite schema.
 - [`examples/config.example.toml`](examples/config.example.toml) — future daemon configuration.
 - [`examples/workflow.oauth.example.json`](examples/workflow.oauth.example.json) — proposed plan contract.
 
@@ -59,18 +60,50 @@ flowchart TB
 ## Planned CLI commands
 
 ```bash
-takt daemon start
-takt project add steadlume ~/projects/steadlume
 takt agent ls
 takt run steadlume 'Implement Google OAuth with tests'
 takt plan show <workflow-id>
-takt workflow status <workflow-id>
 takt review <workflow-id>
 takt approve <approval-id>
 takt tui
 ```
 
-## Run M0 offline
+## Run the M1 mock daemon on Linux
+
+From a Git checkout with Rust, a C compiler for bundled SQLite, and Git installed:
+
+```bash
+cargo build
+target/debug/takt daemon start
+target/debug/takt project add takt "$PWD"
+workflow_id=$(target/debug/takt workflow submit takt 'Check a two-developer workflow')
+target/debug/takt workflow status "$workflow_id"
+target/debug/takt events tail "$workflow_id"
+target/debug/takt daemon stop
+```
+
+The daemon runs the same fixed two-developer mock plan for each submission. The
+request is recorded as a label, and the project’s current Git commit is recorded
+as its baseline. On success, the status is `awaiting_approval` and the trace ends
+at the simulated gate. Provider execution and repository modifications are
+future work.
+
+- `takt daemon status` checks readiness, and `takt daemon run` keeps the daemon in
+  the foreground for diagnostics.
+- SQLite lives under `$XDG_STATE_HOME/takt-rs` or `$HOME/.local/state/takt-rs`.
+  The socket lives under `$XDG_RUNTIME_DIR/takt-rs`, with a fallback to the
+  state directory’s `run` subdirectory. For a separate local instance, set
+  `TAKT_STATE_DIR` to an absolute private directory. It then uses `run` under
+  that directory unless you also set `TAKT_RUNTIME_DIR`. Existing Takt
+  directories must be owned by your user and have mode `0700`.
+- Event reads return the retained history. Use `--after <seq>` to replay from a
+  cursor and `--follow` to keep reading, including across a brief daemon
+  restart. Takt retains up to 256 events per workflow and reports expired cursors.
+- A restart preserves completed work. An attempt active at shutdown or crash
+  becomes `Interrupted` and stops the affected workflow. A workflow that lost
+  no active attempts can continue from its persisted checkpoint.
+
+## Run the in-process demo and tests
 
 With a Rust toolchain installed:
 
@@ -101,10 +134,11 @@ The trace ends at a simulated merge approval gate with no Git operations.
 - Transient mock failures retry within the configured attempt budget. Running
   tasks wait for mock cancellation acknowledgement. Runtime loss moves active
   tasks to interrupted, and a retry requires explicit reconciliation.
-- Workflow state, mailbox, and events live in memory. Verification, recovery,
-  and approval are simulations. The daemon and SQLite are M1, real provider
-  execution is M2, worktrees and approval enforcement are M3, and Telegram and
-  TUI are later milestones.
+- The standalone demo keeps state in memory. The M1 daemon persists checkpoints,
+  dispatch records, messages, and mock session IDs. `cargo test` exercises real
+  local sockets and kills mock daemons at dispatch and completion boundaries.
+- Real Codex execution is M2, worktrees and approval enforcement are M3, and
+  Antigravity, Telegram, and TUI remain future work.
 
 See the [implementation plan](docs/IMPLEMENTATION.md).
 

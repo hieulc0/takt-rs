@@ -27,6 +27,15 @@ Deliverables:
 
 **Exit gate:** kill daemon at each step of mock dispatch; restart has consistent DB and never duplicates completed action. CLI reconnection works.
 
+M1 uses a versioned scheduler checkpoint as the authoritative task state. The
+first migration also stores attempts, mock session references, the dispatch
+outbox, terminal results in the inbox, addressed mailbox messages, and a
+256-event journal per workflow. The daemon runs one workflow at a time and can
+assign both developer tasks during that workflow. Submissions run the fixed M0
+fixture and record a Git baseline. A pending dispatch from a lost runtime is
+conservatively interrupted and is retained for inspection. Real provider
+reconciliation and explicit recovery actions are follow-on work.
+
 ## M2 — Real Codex adapter
 
 - Spawn `codex app-server` locally over stdio; version-aware initialize and schema-backed parsing.

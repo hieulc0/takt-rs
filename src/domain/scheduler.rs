@@ -1,5 +1,6 @@
 //! Single-writer scheduling and transitions with no runtime or I/O dependencies.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 use super::event::{
@@ -20,6 +21,7 @@ pub enum SchedulerError {
     CannotReconcile(String),
 }
 
+#[derive(Serialize, Deserialize)]
 struct Task {
     state: TaskState,
     attempts: u32,
@@ -27,20 +29,34 @@ struct Task {
     requested_help: bool,
 }
 
+#[derive(Serialize, Deserialize)]
 struct HelpRequest {
     message: Message,
     delivered: bool,
 }
 
-pub struct Scheduler {
-    plan: ValidatedPlan,
-    agents: Vec<Agent>,
+#[derive(Serialize, Deserialize)]
+pub struct Checkpoint {
     tasks: Vec<Task>,
     active: BTreeMap<AttemptId, (usize, usize)>,
     next_attempt: u64,
     next_message: u64,
     inbox: BTreeMap<AttemptId, Vec<Message>>,
     requests: BTreeMap<MessageId, HelpRequest>,
+    next_ready: usize,
+}
+
+impl Checkpoint {
+    fn mark_ready_order(&mut self, task: usize) {
+        self.tasks[task].ready_since = self.next_ready;
+        self.next_ready += 1;
+    }
+}
+
+pub struct Scheduler {
+    plan: ValidatedPlan,
+    agents: Vec<Agent>,
+    checkpoint: Checkpoint,
     events: Vec<Event>,
 }
 
@@ -70,12 +86,15 @@ impl Scheduler {
         let mut scheduler = Self {
             plan,
             agents,
-            tasks,
-            active: BTreeMap::new(),
-            next_attempt: 1,
-            next_message: 1,
-            inbox: BTreeMap::new(),
-            requests: BTreeMap::new(),
+            checkpoint: Checkpoint {
+                tasks,
+                active: BTreeMap::new(),
+                next_attempt: 1,
+                next_message: 1,
+                inbox: BTreeMap::new(),
+                requests: BTreeMap::new(),
+                next_ready: 0,
+            },
             events: Vec::new(),
         };
         scheduler.refresh_ready();
@@ -86,37 +105,70 @@ impl Scheduler {
         &self.events
     }
 
+    pub fn checkpoint(&self) -> &Checkpoint {
+        &self.checkpoint
+    }
+
+    /// Restores state for the same validated plan and agent roster.
+    pub fn restore_checkpoint(&mut self, checkpoint: Checkpoint) {
+        self.checkpoint = checkpoint;
+        self.events.clear();
+    }
+
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    pub fn task_states(&self) -> impl Iterator<Item = (&str, TaskState)> {
+        self.plan
+            .tasks
+            .iter()
+            .zip(&self.checkpoint.tasks)
+            .map(|(spec, task)| (spec.graph.id.as_str(), task.state))
+    }
+
+    pub fn has_active_attempts(&self) -> bool {
+        !self.checkpoint.active.is_empty()
+    }
+
     pub fn state(&self, task: &str) -> Result<TaskState, SchedulerError> {
-        Ok(self.tasks[self.task_index(task)?].state)
+        Ok(self.checkpoint.tasks[self.task_index(task)?].state)
     }
 
     pub fn attempt_state(&self, attempt: AttemptId) -> Option<TaskState> {
-        self.active
+        self.checkpoint
+            .active
             .get(&attempt)
-            .map(|&(task, _)| self.tasks[task].state)
+            .map(|&(task, _)| self.checkpoint.tasks[task].state)
     }
 
     pub fn all_completed(&self) -> bool {
-        self.tasks
+        self.checkpoint
+            .tasks
             .iter()
             .all(|task| task.state == TaskState::Completed)
     }
 
     /// Older ready tasks win ties at the same priority. Each agent has one slot.
     pub fn claim_ready(&mut self) -> Vec<Assignment> {
-        let mut ready: Vec<_> = (0..self.tasks.len())
-            .filter(|&index| self.tasks[index].state == TaskState::Ready)
+        let mut ready: Vec<_> = (0..self.checkpoint.tasks.len())
+            .filter(|&index| self.checkpoint.tasks[index].state == TaskState::Ready)
             .collect();
         ready.sort_by_key(|&index| {
             (
                 std::cmp::Reverse(self.plan.tasks[index].priority),
-                self.tasks[index].ready_since,
+                self.checkpoint.tasks[index].ready_since,
             )
         });
-        let mut occupied: HashSet<_> = self.active.values().map(|&(_, agent)| agent).collect();
+        let mut occupied: HashSet<_> = self
+            .checkpoint
+            .active
+            .values()
+            .map(|&(_, agent)| agent)
+            .collect();
         let mut assignments = Vec::new();
         for task in ready {
-            if self.active.len() == self.plan.limits.max_parallel {
+            if self.checkpoint.active.len() == self.plan.limits.max_parallel {
                 break;
             }
             let spec = &self.plan.tasks[task];
@@ -127,17 +179,17 @@ impl Scheduler {
             else {
                 continue;
             };
-            let attempt = AttemptId(self.next_attempt);
-            self.next_attempt += 1;
-            self.tasks[task].attempts += 1;
-            self.tasks[task].requested_help = false;
+            let attempt = AttemptId(self.checkpoint.next_attempt);
+            self.checkpoint.next_attempt += 1;
+            self.checkpoint.tasks[task].attempts += 1;
+            self.checkpoint.tasks[task].requested_help = false;
             let assignment = Assignment {
                 attempt,
                 task: spec.graph.id.clone(),
                 agent: self.agents[agent].id.clone(),
-                number: self.tasks[task].attempts,
+                number: self.checkpoint.tasks[task].attempts,
             };
-            self.active.insert(attempt, (task, agent));
+            self.checkpoint.active.insert(attempt, (task, agent));
             occupied.insert(agent);
             self.events.push(Event::Claimed(assignment.clone()));
             self.transition(task, TaskState::Running);
@@ -148,10 +200,10 @@ impl Scheduler {
 
     /// Applies a provider terminal outcome once, ignoring stale or duplicate signals.
     pub fn report_outcome(&mut self, attempt: AttemptId, outcome: Outcome) -> bool {
-        let Some(&(task, _)) = self.active.get(&attempt) else {
+        let Some(&(task, _)) = self.checkpoint.active.get(&attempt) else {
             return false;
         };
-        let state = self.tasks[task].state;
+        let state = self.checkpoint.tasks[task].state;
         let cancellation_requested = state == TaskState::Cancelling;
         let next = match (state, outcome) {
             (TaskState::Running, Outcome::ResultReported) => TaskState::Verifying,
@@ -187,7 +239,7 @@ impl Scheduler {
         if self.attempt_state(attempt) != Some(TaskState::Verifying) {
             return false;
         }
-        let (task, _) = self.active[&attempt];
+        let (task, _) = self.checkpoint.active[&attempt];
         self.events.push(Event::Verified { attempt, result });
         let next = match result {
             Verification::Passed => TaskState::Completed,
@@ -201,10 +253,11 @@ impl Scheduler {
 
     pub fn cancel(&mut self, task: &str) -> Result<bool, SchedulerError> {
         let task = self.task_index(task)?;
-        match self.tasks[task].state {
+        match self.checkpoint.tasks[task].state {
             TaskState::Queued | TaskState::Ready => self.transition(task, TaskState::Cancelled),
             TaskState::Verifying => {
                 let attempt = self
+                    .checkpoint
                     .active
                     .iter()
                     .find(|(_, (index, _))| *index == task)
@@ -221,27 +274,24 @@ impl Scheduler {
 
     /// Models recovery from a runtime loss while the in-memory scheduler survives.
     pub fn interrupt_active(&mut self) {
-        let attempts: Vec<_> = self.active.keys().copied().collect();
+        let attempts: Vec<_> = self.checkpoint.active.keys().copied().collect();
         for attempt in attempts {
-            if self.attempt_state(attempt) == Some(TaskState::Verifying) {
-                let (task, _) = self.active[&attempt];
-                self.transition(
-                    task,
-                    TaskState::Interrupted {
-                        cancellation_requested: false,
-                    },
-                );
-                self.release(attempt);
-            } else {
-                self.report_outcome(attempt, Outcome::Crashed);
-            }
+            let (task, _) = self.checkpoint.active[&attempt];
+            let cancellation_requested = self.checkpoint.tasks[task].state == TaskState::Cancelling;
+            self.transition(
+                task,
+                TaskState::Interrupted {
+                    cancellation_requested,
+                },
+            );
+            self.release(attempt);
         }
     }
 
     /// Call only when reconciliation establishes that repeating the task is safe.
     pub fn reconcile_for_retry(&mut self, task: &str) -> Result<(), SchedulerError> {
         let index = self.task_index(task)?;
-        if self.tasks[index].state
+        if self.checkpoint.tasks[index].state
             != (TaskState::Interrupted {
                 cancellation_requested: false,
             })
@@ -266,7 +316,7 @@ impl Scheduler {
     }
 
     fn transition(&mut self, task: usize, state: TaskState) {
-        self.tasks[task].state = state;
+        self.checkpoint.tasks[task].state = state;
         self.events.push(Event::StateChanged {
             task: self.task_id(task),
             state,
@@ -278,36 +328,37 @@ impl Scheduler {
             .plan
             .tasks
             .iter()
-            .zip(&self.tasks)
+            .zip(&self.checkpoint.tasks)
             .filter(|(_, task)| task.state == TaskState::Completed)
             .map(|(spec, _)| spec.graph.id.as_str())
             .collect();
         let ready: HashSet<_> = self.plan.graph.ready(&completed).into_iter().collect();
-        for index in 0..self.tasks.len() {
-            if self.tasks[index].state == TaskState::Queued
+        for index in 0..self.checkpoint.tasks.len() {
+            if self.checkpoint.tasks[index].state == TaskState::Queued
                 && ready.contains(self.plan.tasks[index].graph.id.as_str())
             {
-                self.tasks[index].state = TaskState::Ready;
-                self.tasks[index].ready_since = self.events.len();
+                self.checkpoint.tasks[index].state = TaskState::Ready;
+                self.checkpoint.mark_ready_order(index);
                 self.events.push(Event::Ready(self.task_id(index)));
             }
         }
     }
 
     fn can_retry(&self, task: usize) -> bool {
-        self.tasks[task].attempts < self.plan.limits.max_attempts
+        self.checkpoint.tasks[task].attempts < self.plan.limits.max_attempts
     }
 
     fn retry(&mut self, task: usize) {
         self.events.push(Event::RetryScheduled(self.task_id(task)));
-        self.tasks[task].ready_since = self.events.len();
+        self.checkpoint.mark_ready_order(task);
         self.transition(task, TaskState::Ready);
     }
 
     fn release(&mut self, attempt: AttemptId) {
-        self.active.remove(&attempt);
-        self.inbox.remove(&attempt);
-        self.requests
+        self.checkpoint.active.remove(&attempt);
+        self.checkpoint.inbox.remove(&attempt);
+        self.checkpoint
+            .requests
             .retain(|_, help| help.message.from != attempt && help.message.to != attempt);
     }
 }

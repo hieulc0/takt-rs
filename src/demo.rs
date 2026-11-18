@@ -8,7 +8,7 @@ use takt_rs::{
     mock::{MockBackend, Step},
 };
 
-pub fn run() -> Result<Vec<Event>, String> {
+pub(crate) fn scheduler() -> Result<Scheduler, String> {
     let plan = Plan {
         version: PLAN_VERSION,
         tasks: vec![
@@ -50,8 +50,11 @@ pub fn run() -> Result<Vec<Event>, String> {
     let plan = plan
         .validate(limits, &["src"])
         .map_err(|error| format!("{error:?}"))?;
-    let mut scheduler =
-        Scheduler::new(plan, agents.into()).map_err(|error| format!("{error:?}"))?;
+    Scheduler::new(plan, agents.into()).map_err(|error| format!("{error:?}"))
+}
+
+pub fn run() -> Result<Vec<Event>, String> {
+    let mut scheduler = scheduler()?;
     let mut mock = MockBackend::default();
     for _ in 0..16 {
         for assignment in scheduler.claim_ready() {
@@ -95,7 +98,7 @@ fn task(id: &str, role: Role, depends_on: &[&str], acceptance: &str) -> PlannedT
     }
 }
 
-fn script(task: &str) -> Result<Vec<Step>, String> {
+pub(crate) fn script(task: &str) -> Result<Vec<Step>, String> {
     let success = Step::Finish(Outcome::ResultReported);
     match task {
         "contract" => Ok(vec![

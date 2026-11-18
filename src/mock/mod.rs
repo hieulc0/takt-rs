@@ -10,6 +10,12 @@ use crate::domain::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SessionId(u64);
 
+impl SessionId {
+    pub fn native_id(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Step {
     Yield,
@@ -45,6 +51,13 @@ pub struct MockBackend {
 }
 
 impl MockBackend {
+    pub fn with_session_counter(next_session: u64) -> Self {
+        Self {
+            next_session,
+            ..Self::default()
+        }
+    }
+
     pub fn start(
         &mut self,
         assignment: Assignment,

@@ -93,6 +93,13 @@ Example response:
 {"protocol_version":1,"id":"req-1","result":{"workflow_id":"wf_01","state":"planning"}}
 ```
 
+M1 implements a subset of this interface. It uses one versioned JSON line per
+connection with typed commands and responses. Both ends check peer UID on
+Linux. Event reads are paginated by workflow and sequence. The CLI follows
+events by polling with the last seen sequence and reconnects after brief socket
+loss. M1 uses the default socket path above when `XDG_RUNTIME_DIR` is set and
+supports overrides documented in the README.
+
 ## Transaction + outbox protocol
 
 1. In a SQLite transaction, validate task readiness, reserve agent slot, create `attempt` with lease token, move task to RUNNING, append `task.started` event, create an outbox dispatch command.

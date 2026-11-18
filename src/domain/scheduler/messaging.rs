@@ -10,26 +10,27 @@ impl Scheduler {
         body: String,
     ) -> Result<MessageId, SchedulerError> {
         let &(task, _) = self
+            .checkpoint
             .active
             .get(&from)
             .ok_or(SchedulerError::InactiveAttempt(from))?;
         if from == to
-            || self.tasks[task].state != TaskState::Running
-            || self.tasks[task].requested_help
+            || self.checkpoint.tasks[task].state != TaskState::Running
+            || self.checkpoint.tasks[task].requested_help
             || self.attempt_state(to) != Some(TaskState::Running)
         {
             return Err(SchedulerError::InvalidHelpRoute);
         }
         let message = self.enqueue(from, to, MessageKind::HelpRequest, body);
         let id = message.id;
-        self.requests.insert(
+        self.checkpoint.requests.insert(
             id,
             HelpRequest {
                 message,
                 delivered: false,
             },
         );
-        self.tasks[task].requested_help = true;
+        self.checkpoint.tasks[task].requested_help = true;
         self.transition(task, TaskState::Blocked);
         Ok(id)
     }
@@ -40,7 +41,7 @@ impl Scheduler {
         request: MessageId,
         body: String,
     ) -> Result<MessageId, SchedulerError> {
-        let Some(help) = self.requests.get(&request) else {
+        let Some(help) = self.checkpoint.requests.get(&request) else {
             return Err(SchedulerError::InvalidHelpAnswer(request));
         };
         let to = help.message.from;
@@ -51,7 +52,7 @@ impl Scheduler {
         {
             return Err(SchedulerError::InvalidHelpAnswer(request));
         }
-        self.requests.remove(&request);
+        self.checkpoint.requests.remove(&request);
         Ok(self
             .enqueue(from, to, MessageKind::HelpAnswer { request }, body)
             .id)
@@ -65,9 +66,9 @@ impl Scheduler {
         }
         let mut delivered = Vec::new();
         let mut pending = Vec::new();
-        for message in self.inbox.remove(&attempt).unwrap_or_default() {
+        for message in self.checkpoint.inbox.remove(&attempt).unwrap_or_default() {
             if message.kind == MessageKind::HelpRequest {
-                let Some(help) = self.requests.get_mut(&message.id) else {
+                let Some(help) = self.checkpoint.requests.get_mut(&message.id) else {
                     continue;
                 };
                 if state == Some(TaskState::Blocked) {
@@ -81,13 +82,13 @@ impl Scheduler {
                 to: attempt,
             });
             if matches!(message.kind, MessageKind::HelpAnswer { .. }) {
-                let (task, _) = self.active[&attempt];
+                let (task, _) = self.checkpoint.active[&attempt];
                 self.transition(task, TaskState::Running);
             }
             delivered.push(message);
         }
         if !pending.is_empty() {
-            self.inbox.insert(attempt, pending);
+            self.checkpoint.inbox.insert(attempt, pending);
         }
         delivered
     }
@@ -100,14 +101,18 @@ impl Scheduler {
         body: String,
     ) -> Message {
         let message = Message {
-            id: MessageId(self.next_message),
+            id: MessageId(self.checkpoint.next_message),
             from,
             to,
             kind,
             body,
         };
-        self.next_message += 1;
-        self.inbox.entry(to).or_default().push(message.clone());
+        self.checkpoint.next_message += 1;
+        self.checkpoint
+            .inbox
+            .entry(to)
+            .or_default()
+            .push(message.clone());
         self.events.push(Event::MessageQueued(message.clone()));
         message
     }
