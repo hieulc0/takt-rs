@@ -1,0 +1,13 @@
+[package]
+name = "takt-rs"
+version = "0.0.1"
+edition = "2021"
+description = "Scaffold for a lightweight Rust hybrid agent orchestrator"
+publish = false
+
+[[bin]]
+name = "takt"
+path = "src/main.rs"
+
+[dependencies]
+# Intentionally empty for M0 scaffold. Agent adds only what is needed per milestone.

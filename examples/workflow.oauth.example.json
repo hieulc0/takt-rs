@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "project_id": "steadlume",
+  "request": "Implement Google OAuth login with independent verification",
+  "baseline_sha": "<actual SHA from registered repository>",
+  "max_parallel_tasks": 2,
+  "tasks": [
+    {
+      "id": "design-auth-contract",
+      "role": "architect",
+      "title": "Inspect repository and specify OAuth contract",
+      "depends_on": [],
+      "allowed_paths": ["docs/"],
+      "acceptance": ["Document callback, cookie and redirect contracts"]
+    },
+    {
+      "id": "backend-oauth",
+      "role": "developer",
+      "title": "Implement backend OAuth callback",
+      "depends_on": ["design-auth-contract"],
+      "allowed_paths": ["app/backend/"],
+      "acceptance": ["Backend tests pass", "No tokens logged"]
+    },
+    {
+      "id": "frontend-login",
+      "role": "developer",
+      "title": "Implement login UI",
+      "depends_on": ["design-auth-contract"],
+      "allowed_paths": ["app/frontend/"],
+      "acceptance": ["Frontend tests pass", "Redirect behavior matches contract"]
+    },
+    {
+      "id": "integration-checks",
+      "role": "verifier",
+      "title": "Integrate approved commits and run checks",
+      "depends_on": ["backend-oauth", "frontend-login"],
+      "allowed_paths": [],
+      "acceptance": ["Integrated build and tests succeed"]
+    },
+    {
+      "id": "review",
+      "role": "reviewer",
+      "title": "Review integrated diff and tests",
+      "depends_on": ["integration-checks"],
+      "allowed_paths": [],
+      "acceptance": ["No unresolved high-severity finding", "Human merge approval is pending"]
+    }
+  ]
+}

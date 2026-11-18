@@ -1,0 +1,51 @@
+# EXAMPLE ONLY: proposed future config shape; not yet parsed by scaffold.
+[daemon]
+max_parallel_tasks = 2
+max_tasks_per_workflow = 12
+max_replans = 2
+log_level = "info"
+
+[security]
+automatic_merge = false
+allow_provider_sandbox_bypass = false
+allow_account_rotation = false
+require_explicit_merge_approval = true
+
+[projects.steadlume]
+root = "/home/you/projects/steadlume"
+default_branch = "main"
+
+[[agents]]
+id = "lead"
+role = "architect"
+backend = "codex-app-server"
+max_concurrency = 1
+description = "Plan bounded work and resolve architectural blockers."
+
+[[agents]]
+id = "dev-a"
+role = "developer"
+backend = "codex-app-server"
+max_concurrency = 1
+description = "Implement assigned code, preserve unrelated changes, provide evidence."
+
+[[agents]]
+id = "dev-b"
+role = "developer"
+backend = "codex-app-server"
+max_concurrency = 1
+description = "Implement independent assigned work, coordinate contracts."
+
+[[agents]]
+id = "reviewer"
+role = "reviewer"
+backend = "codex-app-server"
+max_concurrency = 1
+description = "Review integrated diff against criteria and observed check results."
+
+[telegram]
+enabled = false
+# Bot token never goes in config file. Use protected secret store / env.
+allowed_user_ids = []
+private_chat_id = 0
+notifications = ["blocked", "approval_requested", "terminal"]
